@@ -71,7 +71,7 @@ function renderStates(list) {
   container.innerHTML = list.map((s, i) => {
     const uf = s.sigla;
     const stateCompleted = completed[uf] || {};
-    const totalDone = Object.values(stateCompleted).filter(v => v).length;
+    const totalDone = Object.values(stateCompleted).filter(v => v === true || (Array.isArray(v) && v.length > 0)).length;
     const totalCities = window._cityCounts?.[uf] || 0;
     const pct = totalCities ? Math.round((totalDone / totalCities) * 100) : 0;
     const isDone = totalCities > 0 && totalDone === totalCities;
@@ -104,7 +104,7 @@ function getFilteredStates() {
     if (!matchText) return false;
     if (currentFilter === 'all') return true;
     const stateCompleted = completed[s.sigla] || {};
-    const totalDone = Object.values(stateCompleted).filter(v => v).length;
+    const totalDone = Object.values(stateCompleted).filter(v => v === true || (Array.isArray(v) && v.length > 0)).length;
     const totalCities = window._cityCounts?.[s.sigla] || 0;
     const isDone = totalCities > 0 && totalDone === totalCities;
     return currentFilter === 'done' ? isDone : !isDone;
@@ -152,10 +152,9 @@ function renderCities(list) {
     const val = stateCompleted[c.id];
     const isDone = !!val;
     const isGrande = CIDADES_GRANDES.has(c.nome);
-    const regiaoTag = isDone && isGrande && typeof val === 'string' && val !== 'true'
-      ? `<span class="city-regiao-tag">${val}</span>` : '';
-    const bigTag = isGrande && !isDone
-      ? `<span class="city-big-tag">+300k</span>` : '';
+    const regioes = Array.isArray(val) ? val : (isDone && isGrande && typeof val === 'string' && val !== 'true' ? [val] : []);
+    const regiaoTags = regioes.map(r => `<span class="city-regiao-tag">${r}</span>`).join('');
+    const bigTag = isGrande && !isDone ? `<span class="city-big-tag">+300k</span>` : '';
     return `
       <div class="city-item ${isDone ? 'done' : ''}"
            onclick="handleCityClick('${c.id}', '${c.nome.replace(/'/g, "\\'")}', this)">
@@ -165,7 +164,7 @@ function renderCities(list) {
           </svg>
         </div>
         <span class="city-name">${c.nome}</span>
-        ${bigTag}${regiaoTag}
+        ${bigTag}${regiaoTags}
       </div>`;
   }).join('');
 }
@@ -173,38 +172,37 @@ function renderCities(list) {
 // ── Handle city click ─────────────────────────
 function handleCityClick(cityId, cityName, el) {
   if (!currentStateId) return;
-  const val = completed[currentStateId]?.[cityId];
-  const isDone = !!val;
-
-  if (isDone) {
-    if (!completed[currentStateId]) completed[currentStateId] = {};
-    completed[currentStateId][cityId] = false;
-    el.classList.remove('done');
-    el.querySelector('.city-regiao-tag')?.remove();
-    if (CIDADES_GRANDES.has(cityName) && !el.querySelector('.city-big-tag')) {
-      el.querySelector('.city-name').insertAdjacentHTML('afterend', '<span class="city-big-tag">+300k</span>');
-    }
-    saveAndUpdate();
-    return;
-  }
 
   if (CIDADES_GRANDES.has(cityName)) {
+    // Cidade grande: sempre abre modal de região (para adicionar/remover regiões)
     openRegiaoModal(cityId, cityName, el);
   } else {
+    // Cidade normal: toggle simples
     if (!completed[currentStateId]) completed[currentStateId] = {};
-    completed[currentStateId][cityId] = true;
-    el.classList.add('done');
+    const val = completed[currentStateId][cityId];
+    const isDone = !!val;
+    completed[currentStateId][cityId] = !isDone;
+    el.classList.toggle('done', !isDone);
     saveAndUpdate();
   }
 }
 
-// ── Modal de Região ───────────────────────────
+// ── Modal de Região (múltiplas regiões) ───────
+// completed[uf][cityId] = ['Norte','Sul'] ou false
 function openRegiaoModal(cityId, cityName, el) {
   _pendingCityId = cityId;
   _pendingCityEl = el;
   document.getElementById('regiao-city-name').textContent = cityName;
-  document.querySelectorAll('.regiao-opt').forEach(b => b.classList.remove('active'));
   document.getElementById('regiao-modal-error').style.display = 'none';
+
+  // Marca as regiões já selecionadas
+  const val = completed[currentStateId]?.[cityId];
+  const jaFeitas = Array.isArray(val) ? val : [];
+
+  document.querySelectorAll('.regiao-opt').forEach(b => {
+    b.classList.toggle('active', jaFeitas.includes(b.dataset.regiao));
+  });
+
   document.getElementById('regiao-modal').classList.remove('hidden');
 }
 
@@ -215,22 +213,33 @@ function closeRegiaoModal() {
 }
 
 function confirmarRegiao() {
-  const active = document.querySelector('.regiao-opt.active');
-  if (!active) {
-    document.getElementById('regiao-modal-error').style.display = 'block';
-    return;
-  }
-  const regiao = active.dataset.regiao;
-  if (!completed[currentStateId]) completed[currentStateId] = {};
-  completed[currentStateId][_pendingCityId] = regiao;
+  const ativos = [...document.querySelectorAll('.regiao-opt.active')].map(b => b.dataset.regiao);
 
-  if (_pendingCityEl) {
-    _pendingCityEl.classList.add('done');
-    _pendingCityEl.querySelector('.city-big-tag')?.remove();
-    const existing = _pendingCityEl.querySelector('.city-regiao-tag');
-    if (existing) existing.textContent = regiao;
-    else _pendingCityEl.insertAdjacentHTML('beforeend', `<span class="city-regiao-tag">${regiao}</span>`);
+  if (!completed[currentStateId]) completed[currentStateId] = {};
+
+  if (ativos.length === 0) {
+    // Nenhuma região selecionada = desmarcar cidade
+    completed[currentStateId][_pendingCityId] = false;
+    if (_pendingCityEl) {
+      _pendingCityEl.classList.remove('done');
+      _pendingCityEl.querySelectorAll('.city-regiao-tag').forEach(t => t.remove());
+      if (!_pendingCityEl.querySelector('.city-big-tag')) {
+        _pendingCityEl.querySelector('.city-name').insertAdjacentHTML('afterend', '<span class="city-big-tag">+300k</span>');
+      }
+    }
+  } else {
+    completed[currentStateId][_pendingCityId] = ativos;
+    if (_pendingCityEl) {
+      _pendingCityEl.classList.add('done');
+      _pendingCityEl.querySelector('.city-big-tag')?.remove();
+      // Remove tags antigas e recria
+      _pendingCityEl.querySelectorAll('.city-regiao-tag').forEach(t => t.remove());
+      ativos.forEach(r => {
+        _pendingCityEl.insertAdjacentHTML('beforeend', `<span class="city-regiao-tag">${r}</span>`);
+      });
+    }
   }
+
   closeRegiaoModal();
   saveAndUpdate();
 }
@@ -260,7 +269,9 @@ function saveAndUpdate() {
 function updateDoneCount() {
   let total = 0;
   Object.values(completed).forEach(state => {
-    total += Object.values(state).filter(v => v).length;
+    Object.values(state).forEach(v => {
+      if (v === true || (Array.isArray(v) && v.length > 0)) total++;
+    });
   });
   document.getElementById('total-done').textContent = total.toLocaleString('pt-BR');
 }
@@ -273,8 +284,7 @@ document.getElementById('regiao-confirmar').addEventListener('click', confirmarR
 
 document.querySelectorAll('.regiao-opt').forEach(btn => {
   btn.addEventListener('click', () => {
-    document.querySelectorAll('.regiao-opt').forEach(b => b.classList.remove('active'));
-    btn.classList.add('active');
+    btn.classList.toggle('active'); // toggle — pode marcar múltiplos
     document.getElementById('regiao-modal-error').style.display = 'none';
   });
 });
